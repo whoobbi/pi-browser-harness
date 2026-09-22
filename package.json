@@ -51,7 +51,6 @@
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
     "@types/ws": "^8.18.1",
-    "typebox": "*",
     "typescript": "^5.0.0"
   },
   "scripts": {
