@@ -149,36 +149,33 @@ const collectLinux = async (): Promise<ReadonlyArray<BrowserCandidate>> => {
 };
 
 const collectDarwin = async (): Promise<ReadonlyArray<BrowserCandidate>> => {
-  let lines: string[];
-  try {
-    // BSD ps prints the full executable path for `comm`, unlike Linux.
-    const { stdout } = await run("ps", ["-A", "-ww", "-o", "pid=,comm="], { timeout: EXEC_TIMEOUT_MS });
-    lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-
+  // /bin/ps is setuid on macOS, so sandboxed environments commonly reject it.
+  // pgrep is not setuid and provides the same live-process evidence we need.
   const candidates: BrowserCandidate[] = [];
-  for (const line of lines) {
-    const spaceAt = line.indexOf(" ");
-    if (spaceAt < 0) continue;
-    const pid = line.slice(0, spaceAt);
-    const comm = line.slice(spaceAt + 1).trim();
-    const lower = comm.toLowerCase();
-    if (!MAC_BROWSER_NAMES.some((name) => lower.includes(name))) continue;
-    if (isMacChildProcessName(comm)) continue;
-
-    let args = "";
+  for (const name of MAC_BROWSER_NAMES) {
+    let stdout: string;
     try {
-      const { stdout } = await run("ps", ["-ww", "-o", "args=", "-p", pid], { timeout: EXEC_TIMEOUT_MS });
-      args = stdout.trim();
-    } catch {}
-    if (args && hasChildProcessType(args)) continue;
-    const explicit = args ? parseUserDataDirFlag(args) : undefined;
-    candidates.push({
-      exePath: comm,
-      ...(explicit ? { explicitUserDataDir: explicit } : {}),
-    });
+      ({ stdout } = await run("pgrep", ["-ifl", name], { timeout: EXEC_TIMEOUT_MS }));
+    } catch {
+      continue;
+    }
+
+    for (const line of stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const commandLine = line.replace(/^\d+\s+/, "");
+      const lower = commandLine.toLowerCase();
+      const matchedName = MAC_BROWSER_NAMES.find((browserName) => lower.includes(browserName));
+      if (!matchedName || isMacChildProcessName(commandLine) || hasChildProcessType(commandLine)) continue;
+
+      // The app bundle and the executable share a name (e.g. Google Chrome.app/…/Google Chrome).
+      // Use the final occurrence so the result is the executable, not the bundle prefix.
+      const endOfExecutable = lower.lastIndexOf(matchedName) + matchedName.length;
+      const exePath = commandLine.slice(0, endOfExecutable);
+      const explicit = parseUserDataDirFlag(commandLine);
+      candidates.push({
+        exePath,
+        ...(explicit ? { explicitUserDataDir: explicit } : {}),
+      });
+    }
   }
   return candidates;
 };
