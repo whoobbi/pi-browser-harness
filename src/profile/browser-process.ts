@@ -148,10 +148,31 @@ const collectLinux = async (): Promise<ReadonlyArray<BrowserCandidate>> => {
   return candidates;
 };
 
+export const parseDarwinProcessCandidate = (commandLine: string): BrowserCandidate | undefined => {
+  const lower = commandLine.toLowerCase();
+  const executableNameStart = lower.indexOf(".app/contents/macos/");
+  if (executableNameStart < 0) return undefined;
+
+  const start = executableNameStart + ".app/contents/macos/".length;
+  const matchedName = MAC_BROWSER_NAMES.find((browserName) => lower.startsWith(browserName, start));
+  if (!matchedName) return undefined;
+
+  const exePath = commandLine.slice(0, start + matchedName.length);
+  const args = commandLine.slice(exePath.length).trimStart();
+  if (isMacChildProcessName(exePath) || hasChildProcessType(args)) return undefined;
+
+  const explicit = parseUserDataDirFlag(args);
+  return {
+    exePath,
+    ...(explicit ? { explicitUserDataDir: explicit } : {}),
+  };
+};
+
 const collectDarwin = async (): Promise<ReadonlyArray<BrowserCandidate>> => {
   // /bin/ps is setuid on macOS, so sandboxed environments commonly reject it.
   // pgrep is not setuid and provides the same live-process evidence we need.
   const candidates: BrowserCandidate[] = [];
+  const seenPids = new Set<string>();
   for (const name of MAC_BROWSER_NAMES) {
     let stdout: string;
     try {
@@ -161,20 +182,14 @@ const collectDarwin = async (): Promise<ReadonlyArray<BrowserCandidate>> => {
     }
 
     for (const line of stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
-      const commandLine = line.replace(/^\d+\s+/, "");
-      const lower = commandLine.toLowerCase();
-      const matchedName = MAC_BROWSER_NAMES.find((browserName) => lower.includes(browserName));
-      if (!matchedName || isMacChildProcessName(commandLine) || hasChildProcessType(commandLine)) continue;
-
-      // The app bundle and the executable share a name (e.g. Google Chrome.app/…/Google Chrome).
-      // Use the final occurrence so the result is the executable, not the bundle prefix.
-      const endOfExecutable = lower.lastIndexOf(matchedName) + matchedName.length;
-      const exePath = commandLine.slice(0, endOfExecutable);
-      const explicit = parseUserDataDirFlag(commandLine);
-      candidates.push({
-        exePath,
-        ...(explicit ? { explicitUserDataDir: explicit } : {}),
-      });
+      const match = /^(\d+)\s+(.+)$/.exec(line);
+      const pid = match?.[1];
+      const commandLine = match?.[2];
+      if (!pid || !commandLine || seenPids.has(pid)) continue;
+      const candidate = parseDarwinProcessCandidate(commandLine);
+      if (!candidate) continue;
+      seenPids.add(pid);
+      candidates.push(candidate);
     }
   }
   return candidates;
